@@ -10,7 +10,7 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# Función para registrar y mostrar alertas con prevención de inundación (5 min)
+# Función para registrar y mostrar alertas con prevención de inundación cuando sea 5 minutos
 trigger_alert() {
     local alert_type="$1"
     local severity="$2"
@@ -37,13 +37,13 @@ trigger_alert() {
     fi
 }
 
-# 1. Alerta de Memoria RAM (> 90%)
+# 1 Alerta de Memoria RAM cuando sea mayor 90%
 ram_usage=$(free | awk '/Mem/{print int($3/$2 * 100)}')
 if (( ram_usage > 90 )); then
     trigger_alert "RAM" "WARNING" "RAM usage is at ${ram_usage}% (Threshold: 90%)"
 fi
 
-# 2. Alerta de Carga de CPU (> 5 por 3 chequeos consecutivos)
+# 2 Alerta de Carga de CPU revisandolo 3 veces
 cpu_load=$(uptime | awk -F 'load average:' '{print $2}' | cut -d, -f1 | tr -d ' ')
 cpu_high=$(awk -v load="$cpu_load" 'BEGIN {print (load > 5) ? 1 : 0}')
 cpu_state_file="$STATE_DIR/cpu_streak"
