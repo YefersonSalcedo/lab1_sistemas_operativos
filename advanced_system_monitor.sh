@@ -1,7 +1,8 @@
 #!/bin/bash
 #
-# advanced_system_monitor.sh
-# Practica 1A - Sistemas Operativos - UdeA
+# Autores: Yeferson Alexis Salcedo Preciado
+#          Jhoan Esteban Echeverri Villa
+#
 # Tarea 1: Core Script Enhancement
 #
 # Que hace este script:

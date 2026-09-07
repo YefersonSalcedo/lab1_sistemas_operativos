@@ -1,4 +1,25 @@
 #!/bin/bash
+#
+# Autores: Yeferson Alexis Salcedo Preciado
+#          Jhoan Esteban Echeverri Villa
+#
+# Tarea 4: Script Integration and Menu System
+#
+# Que hace este script:
+#   Integra los otros 3 scripts (advanced_system_monitor.sh, alert_system.sh
+#   y generate_report.sh) en un solo punto de entrada, con dos formas de uso:
+#     1. Argumentos de linea de comandos: --daemon, --report, --alert, --config.
+#     2. Menu interactivo: iniciar/detener el daemon, ver estadisticas en
+#        tiempo real, generar reportes (hoy / fecha especifica / semanal),
+#        revisar y filtrar el historial de alertas, y configurar los
+#        umbrales de alert_system.sh.
+#
+# Uso:
+#   ./main_monitor.sh                              Abre el menu interactivo
+#   ./main_monitor.sh --daemon                      Inicia el daemon en segundo plano
+#   ./main_monitor.sh --report [--date YYYY-MM-DD]  Genera un reporte
+#   ./main_monitor.sh --alert                       Revisa alertas de inmediato
+#   ./main_monitor.sh --config                      Edita los umbrales de alerta
 
 # Directorios de los scripts
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"

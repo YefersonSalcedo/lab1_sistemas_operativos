@@ -1,7 +1,8 @@
 #!/bin/bash
 #
-# generate_report.sh
-# Practica 1A - Sistemas Operativos - UdeA
+# Autores: Yeferson Alexis Salcedo Preciado
+#          Jhoan Esteban Echeverri Villa
+#
 # Tarea 3: Report Generation
 #
 # Que hace este script:

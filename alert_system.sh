@@ -1,7 +1,22 @@
 #!/bin/bash
-# alert_system.sh - Tarea 2: Alert System Implementation (Con logs estables)
+#
+# Autores: Yeferson Alexis Salcedo Preciado
+#          Jhoan Esteban Echeverri Villa
+#
+# Tarea 2: Alert System Implementation
+#
+# Que hace este script:
+#   Revisa el estado actual del sistema (RAM, carga de CPU, disco e
+#   interfaces de red) y dispara alertas cuando se superan ciertos
+#   umbrales. Todas las alertas quedan registradas en un log, con
+#   proteccion anti-flooding (no repite la misma alerta antes de 5
+#   minutos) y salida coloreada en consola (rojo = critico, amarillo =
+#   advertencia).
+#
+# Uso:
+#   ./alert_system.sh   Corre una sola revision de todos los umbrales
 
-LOG_DIR="./system_monitor_logs"
+LOG_DIR="$HOME/system_monitor_logs"
 ALERT_LOG="$LOG_DIR/alerts.log"
 STATE_DIR="$LOG_DIR/.state"
 
