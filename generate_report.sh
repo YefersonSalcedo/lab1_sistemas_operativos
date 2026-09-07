@@ -12,7 +12,7 @@
 #   El reporte incluye:
 #     1. Uptime del sistema y load average actual.
 #     2. Pico de uso de memoria del dia y el timestamp en que ocurrio.
-#     3. Top 5 procesos por uso de CPU (instantaneo, ver nota abajo).
+#     3. Top 5 procesos por uso PROMEDIO de CPU durante el dia
 #     4. Resumen de trafico de red total (MB enviados/recibidos) del dia.
 #
 # Uso:
@@ -22,6 +22,14 @@
 
 LOG_DIR="$HOME/system_monitor_logs"
 LOG_FILE="$LOG_DIR/metrics.csv"
+
+# Historico de top-procesos que genera advanced_system_monitor.sh en modo
+# daemon (una fila por cada proceso que aparecio en el top 5 de CPU o de
+# memoria, cada vez que corrio un ciclo del daemon). Lo usamos para poder
+# calcular un PROMEDIO real por proceso a lo largo del dia, en vez de solo
+# una foto del momento en que se genera el reporte.
+PROC_LOG="$LOG_DIR/top_processes.csv"
+
 REPORTS_DIR="$LOG_DIR/reports"
 
 mkdir -p "$REPORTS_DIR"
@@ -51,9 +59,19 @@ fi
 # Se guarda en un archivo temporal para no repetir el filtro en cada
 # funcion (evita leer y filtrar el CSV completo varias veces).
 FILTERED_TMP=$(mktemp)
-trap 'rm -f "$FILTERED_TMP"' EXIT   # borra el temporal aunque el script falle o termine
+FILTERED_PROC_TMP=$(mktemp)
+trap 'rm -f "$FILTERED_TMP" "$FILTERED_PROC_TMP"' EXIT   # borra los temporales aunque el script falle o termine
 
 awk -F',' -v d="$REPORT_DATE" 'NR==1 || substr($1,1,10)==d' "$LOG_FILE" > "$FILTERED_TMP"
+
+# Mismo filtro por fecha, pero sobre el historico de procesos. Si el
+# archivo todavia no existe, dejamos el temporal vacio en vez de fallar: el reporte de top
+# procesos simplemente avisara que no hay datos, sin tumbar el script.
+if [ -f "$PROC_LOG" ]; then
+    awk -F',' -v d="$REPORT_DATE" 'NR==1 || substr($1,1,10)==d' "$PROC_LOG" > "$FILTERED_PROC_TMP"
+else
+    : > "$FILTERED_PROC_TMP"
+fi
 
 # Numero de filas de datos (sin contar el encabezado)
 SAMPLE_COUNT=$(( $(wc -l < "$FILTERED_TMP") - 1 ))
@@ -86,9 +104,36 @@ get_peak_memory() {
     ' "$FILTERED_TMP"
 }
 
-# 3. Top 5 procesos por CPU.
+# 3. Top 5 procesos por uso PROMEDIO de CPU durante el dia.
+#    Logica:
+#      1. De FILTERED_PROC_TMP (ya filtrado por la fecha del reporte) nos
+#         quedamos solo con las filas de tipo "cpu" (columna 2), ignorando
+#         las de "mem".
+#      2. Sumamos el porcentaje de CPU (columna 5) de cada proceso segun su
+#         nombre (columna 4, "comando") y contamos cuantas veces aparecio.
+#      3. El promedio de cada proceso es sum/count.
+#      4. Ordenamos de mayor a menor promedio ("sort -t',' -k2 -rn") y nos
+#         quedamos con los primeros 5 ("head -n 5").
+#
+#    Si un proceso aparecio pocas veces en el top del dia, su promedio
+#    puede no ser muy representativo; por eso tambien mostramos la columna
+#    "muestras" (cuantas veces fue medido), para que se pueda juzgar que 
+#    tan confiable es ese promedio.
 get_top_processes() {
-    ps aux --sort=-%cpu | head -n 6
+    if [ ! -s "$FILTERED_PROC_TMP" ] || [ "$(wc -l < "$FILTERED_PROC_TMP")" -le 1 ]; then
+        echo "No hay historial de procesos para $REPORT_DATE."
+        echo "(Corre advanced_system_monitor.sh --daemon durante el dia para ir generando este historico)."
+        return
+    fi
+
+    printf "%-24s %14s %10s\n" "PROCESO" "CPU_PROM(%)" "MUESTRAS"
+    awk -F',' '
+        NR>1 && $2=="cpu" { sum[$4]+=$5; count[$4]++ }
+        END {
+            for (p in sum) printf "%s,%.2f,%d\n", p, sum[p]/count[p], count[p]
+        }
+    ' "$FILTERED_PROC_TMP" | sort -t',' -k2 -rn | head -n 5 | \
+    awk -F',' '{printf "%-24s %13s%% %10s\n", $1, $2, $3}'
 }
 
 
@@ -150,7 +195,7 @@ generate_text_report() {
         echo "Uso maximo de memoria: $PEAK_MEM_PCT"
         echo "Ocurrio a las:         $PEAK_MEM_TS"
         echo
-        echo "--- Top 5 procesos por CPU (snapshot al generar el reporte) ---"
+        echo "--- Top 5 procesos por uso PROMEDIO de CPU durante el dia ---"
         echo "$TOP_PROCS"
         echo
         echo "--- Trafico de red total del dia ---"

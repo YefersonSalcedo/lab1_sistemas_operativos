@@ -31,6 +31,14 @@ LOG_DIR="$HOME/system_monitor_logs"
 # (una fila por cada vez que se mide CPU/memoria/red)
 LOG_FILE="$LOG_DIR/metrics.csv"
 
+# Archivo donde se guarda el historial del TOP de procesos (CPU y memoria)
+# cada vez que corre el daemon.
+PROC_LOG="$LOG_DIR/top_processes.csv"
+
+# Cuantos minutos hacia atras se usan por defecto para calcular el
+# promedio historico de un proceso en la comparacion de "--top-procs".
+PROC_HIST_MINUTES=60
+
 # Cada cuantos segundos se toma una medicion en modo daemon.
 INTERVAL=300 # 300 segundos = 5 minutos
 
@@ -51,21 +59,30 @@ init_log_file() {
 
 # Devuelve el porcentaje de CPU usado por procesos de usuario en este instante.
 # Como funciona el pipeline:
-#   top -bn1          -> ejecuta "top" en modo batch (-b, sin interfaz grafica)
-#                        y solo UNA vez (-n1), en vez de refrescar cada 3s.
-#   grep "Cpu(s)"     -> de toda la salida de top, nos quedamos solo con la
-#                        linea que resume el uso de CPU. Se ve asi:
-#                        %Cpu(s):  0.0 us,  0.0 sy,  0.0 ni,100.0 id, ...
-#   awk -F'[,:]' '{print $2}'
-#                     -> separa esa linea usando "," O ":" como delimitador
-#                        (el patron [,:] entre corchetes es una clase de
-#                        caracteres: "cualquiera de estos dos simbolos").
-#                        Eso deja el campo 2 como "  0.0 us" (el %us, uso
-#                        de usuario).
-#   awk '{print $1}'  -> de "  0.0 us" nos quedamos solo con el numero "0.0",
-#                        descartando la etiqueta "us".
+#   top -bn1              -> ejecuta "top" en modo batch (-b) una sola vez (-n1).
+#   grep "Cpu(s)"         -> nos quedamos con la linea resumen, ej:
+#                            %Cpu(s):  0.0 us,  9.1 sy,  0.0 ni, 90.9 id, ...
+#   grep -oP '[\d.]+(?=\s*id)'
+#                         -> expresion regular con "lookahead" (-P activa
+#                            regex estilo Perl): busca un numero decimal
+#                            que este seguido (sin consumirlo) por espacios
+#                            y la etiqueta "id". Esto encuentra el valor de
+#                            %id sin importar en que posicion de la linea
+#                            este.
+# Finalmente devolvemos 100 - %id con un awk BEGIN (Bash no hace decimales).
 get_cpu_usage() {
-    top -bn1 | grep "Cpu(s)" | awk -F'[,:]' '{print $2}' | awk '{print $1}'
+    local idle
+    idle=$(top -bn1 | grep "Cpu(s)" | grep -oP '[\d.]+(?=\s*id)')
+
+    # Si por alguna razon no se pudo extraer %id (ej: locale distinto,
+    # version de top con salida diferente), devolvemos 0 en vez de romper
+    # el resto del script con un valor vacio.
+    if [ -z "$idle" ]; then
+        echo "0.0"
+        return
+    fi
+
+    awk -v idle="$idle" 'BEGIN{printf "%.1f", 100-idle}'
 }
 
 
@@ -108,16 +125,41 @@ log_metrics() {
 }
 
 
+# Crea el archivo de historial de procesos con su encabezado, solo si
+# todavia no existe (misma idea que init_log_file, para no perder el
+# historial cada vez que se reinicia el daemon).
+init_proc_log() {
+    if [ ! -f "$PROC_LOG" ]; then
+        echo "timestamp,tipo,pid,comando,porcentaje" > "$PROC_LOG"
+    fi
+}
+
+
+# Guarda en PROC_LOG el top 5 de procesos por CPU y el top 5 por memoria
+# de ESTE instante. Se llama una vez por cada ciclo del daemon (cada 5
+# min), asi con el tiempo se va acumulando un historial real de que
+# procesos consumen mas recursos y cuanto consumian en el pasado.
+log_top_processes() {
+    local ts
+    ts=$(date +"%Y-%m-%d %H:%M:%S")
+
+    ps -eo pid,comm,pcpu --sort=-pcpu --no-headers | head -n 5 | \
+        awk -v ts="$ts" '{printf "%s,cpu,%s,%s,%s\n", ts, $1, $2, $3}' >> "$PROC_LOG"
+
+    ps -eo pid,comm,pmem --sort=-pmem --no-headers | head -n 5 | \
+        awk -v ts="$ts" '{printf "%s,mem,%s,%s,%s\n", ts, $1, $2, $3}' >> "$PROC_LOG"
+}
+
+
 # Modo "demonio": corre en primer plano en un bucle infinito, tomando una
 # medicion y luego durmiendo $INTERVAL segundos, una y otra vez.
-#
-# (Un demonio "de verdad" corre en segundo plano incluso si cierras la
-# terminal; aqui lo dejamos simple y en primer plano para la practica
 run_daemon() {
     init_log_file
+    init_proc_log
     echo "Monitor iniciado. Registrando en $LOG_FILE cada $((INTERVAL/60)) minutos."
     while true; do
         log_metrics
+        log_top_processes
         sleep "$INTERVAL"
     done
 }
@@ -162,9 +204,9 @@ avg_memory() {
 }
 
 
-# Muestra el top 5 de procesos por uso de CPU y el top 5 por uso de memoria,
-# en el instante actual (esto NO usa el historico del CSV, es una foto del
-# momento).
+# Muestra el top 5 de procesos por uso de CPU y el top 5 por uso de memoria
+# en el instante actual, Y ADEMAS los compara contra su propio promedio
+# historico (guardado en PROC_LOG por el daemon).
 #
 # "ps aux" lista todos los procesos del sistema con detalle.
 # "--sort=-%cpu" los ordena de mayor a menor %CPU (el signo "-" antes del
@@ -172,11 +214,72 @@ avg_memory() {
 # "head -n 6" se queda con las primeras 6 lineas: la de encabezado (USER PID
 # %CPU ...) mas los 5 procesos con mayor uso.
 top_procs() {
-    echo "== Top 5 procesos por CPU =="
+    echo "== Top 5 procesos por CPU (actual) =="
     ps aux --sort=-%cpu | head -n 6
     echo
-    echo "== Top 5 procesos por Memoria =="
+    echo "== Top 5 procesos por Memoria (actual) =="
     ps aux --sort=-%mem | head -n 6
+    echo
+
+    if [ ! -f "$PROC_LOG" ]; then
+        echo "(Sin historial de procesos todavia: corre el daemon un rato para poder comparar contra el pasado)."
+        return
+    fi
+
+    echo "== Comparacion historica (promedio de los ultimos ${PROC_HIST_MINUTES} min, segun $PROC_LOG) =="
+    compare_top_with_history "cpu"
+    echo
+    compare_top_with_history "mem"
+}
+
+
+# Toma el top 5 ACTUAL (por cpu o por mem, segun $1) y, para cada uno de
+# esos procesos, busca en PROC_LOG cual ha sido su porcentaje promedio en
+# los ultimos PROC_HIST_MINUTES minutos. Con eso arma una tabla comparativa:
+# nombre del proceso | uso actual | promedio historico | diferencia.
+#
+# Si un proceso del top actual nunca aparecio antes en PROC_LOG (por
+# ejemplo porque acaba de arrancar), se muestra "N/D" (No hay Datos) en vez
+# de inventar un numero.
+compare_top_with_history() {
+    local tipo="$1" sort_field cutoff
+    if [ "$tipo" = "cpu" ]; then
+        sort_field="-%cpu"
+        echo "-- CPU: proceso | actual | promedio historico | diferencia --"
+    else
+        sort_field="-%mem"
+        echo "-- Memoria: proceso | actual | promedio historico | diferencia --"
+    fi
+
+    cutoff=$(date -d "-${PROC_HIST_MINUTES} minutes" +"%Y-%m-%d %H:%M:%S")
+
+    # ps -eo comm,%cpu/%mem nos da "nombre_proceso  porcentaje" en 2
+    # columnas limpias, ya ordenado y limitado a 5 filas.
+    ps -eo comm,pcpu,pmem --sort="$sort_field" --no-headers | head -n 5 | \
+    while read -r comm cpu_val mem_val; do
+        local actual hist
+        if [ "$tipo" = "cpu" ]; then
+            actual="$cpu_val"
+        else
+            actual="$mem_val"
+        fi
+
+        # Busca en PROC_LOG todas las filas de este mismo tipo (cpu/mem),
+        # de este mismo proceso (comando), dentro del rango de tiempo, y
+        # calcula el promedio de su columna "porcentaje" (campo 5 del CSV).
+        hist=$(awk -F',' -v tipo="$tipo" -v comm="$comm" -v cutoff="$cutoff" '
+            NR>1 && $1>=cutoff && $2==tipo && $4==comm { sum+=$5; count++ }
+            END { if (count>0) printf "%.1f", sum/count; else print "" }
+        ' "$PROC_LOG")
+
+        if [ -z "$hist" ]; then
+            printf "  %-20s %6s%%   %10s\n" "$comm" "$actual" "N/D"
+        else
+            local diff
+            diff=$(awk -v a="$actual" -v h="$hist" 'BEGIN{printf "%+.1f", a-h}')
+            printf "  %-20s %6s%%   %6s%%   (%s)\n" "$comm" "$actual" "$hist" "$diff"
+        fi
+    done
 }
 
 
