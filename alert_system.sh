@@ -53,7 +53,7 @@ else
     log_info "RAM OK (${ram_usage}%)"
 fi
 
-# 2. Alerta de Carga de CPU (> 5 por 3 chequeos consecutivos)
+# 2. Alerta de Carga de CPU mayor a 5 revisandolo 3 veces
 cpu_load=$(uptime | awk -F 'load average:' '{print $2}' | cut -d, -f1 | tr -d ' ')
 cpu_high=$(awk -v val="$cpu_load" 'BEGIN {print (val > 5) ? 1 : 0}')
 cpu_state_file="$STATE_DIR/cpu_streak"
@@ -75,7 +75,7 @@ else
     log_info "CPU OK ($cpu_load)"
 fi
 
-# 3. Alerta de Disco (> 85% en partición root)
+# 3. Alerta de Disco mayor a 85% en la raiz
 disk_usage=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
 if (( disk_usage > 85 )); then
     trigger_alert "DISK" "WARNING" "Root disk usage is at ${disk_usage}% (Threshold: 85%)"
