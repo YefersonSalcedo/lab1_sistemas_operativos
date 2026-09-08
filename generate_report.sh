@@ -120,21 +120,35 @@ get_peak_memory() {
 #    puede no ser muy representativo; por eso tambien mostramos la columna
 #    "muestras" (cuantas veces fue medido), para que se pueda juzgar que 
 #    tan confiable es ese promedio.
-get_top_processes() {
+#
+# get_top_processes_raw(): devuelve el top 5 en CSV crudo
+# "proceso,cpu_prom,muestras", uno por linea, o nada si no hay historial.
+# Se separa de get_top_processes() para que tanto el reporte de texto como
+# el reporte HTML puedan formatear el mismo dato cada uno a su manera, sin
+# repetir el pipeline de awk/sort en dos lugares distintos.
+get_top_processes_raw() {
     if [ ! -s "$FILTERED_PROC_TMP" ] || [ "$(wc -l < "$FILTERED_PROC_TMP")" -le 1 ]; then
+        return
+    fi
+    awk -F',' '
+        NR>1 && $2=="cpu" { sum[$4]+=$5; count[$4]++ }
+        END {
+            for (p in sum) printf "%s,%.2f,%d\n", p, sum[p]/count[p], count[p]
+        }
+    ' "$FILTERED_PROC_TMP" | sort -t',' -k2 -rn | head -n 5
+}
+
+get_top_processes() {
+    local raw
+    raw=$(get_top_processes_raw)
+    if [ -z "$raw" ]; then
         echo "No hay historial de procesos para $REPORT_DATE."
         echo "(Corre advanced_system_monitor.sh --daemon durante el dia para ir generando este historico)."
         return
     fi
 
     printf "%-24s %14s %10s\n" "PROCESO" "CPU_PROM(%)" "MUESTRAS"
-    awk -F',' '
-        NR>1 && $2=="cpu" { sum[$4]+=$5; count[$4]++ }
-        END {
-            for (p in sum) printf "%s,%.2f,%d\n", p, sum[p]/count[p], count[p]
-        }
-    ' "$FILTERED_PROC_TMP" | sort -t',' -k2 -rn | head -n 5 | \
-    awk -F',' '{printf "%-24s %13s%% %10s\n", $1, $2, $3}'
+    echo "$raw" | awk -F',' '{printf "%-24s %13s%% %10s\n", $1, $2, $3}'
 }
 
 
@@ -173,6 +187,7 @@ UPTIME_INFO=$(get_uptime_info)
 PEAK_MEM_PCT=$(get_peak_memory | cut -d',' -f1)
 PEAK_MEM_TS=$(get_peak_memory | cut -d',' -f2)
 TOP_PROCS=$(get_top_processes)
+TOP_PROCS_RAW=$(get_top_processes_raw)
 NET_RX_MB=$(get_network_summary | cut -d',' -f1)
 NET_TX_MB=$(get_network_summary | cut -d',' -f2)
 GENERATED_AT=$(date +"%Y-%m-%d %H:%M:%S")
@@ -223,10 +238,177 @@ generate_csv_report() {
 }
 
 
-# Punto de entrada: genera los 2 formatos y avisa donde quedaron.
+# Reporte en HTML (BONO)
+#
+# Arma el mismo contenido que el reporte de texto, pero como pagina HTML
+# con CSS embebido.
+html_escape() {
+    sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+build_top_processes_html_rows() {
+    if [ -z "$TOP_PROCS_RAW" ]; then
+        echo "<tr><td colspan=\"3\" class=\"empty\">No hay historial de procesos para $REPORT_DATE. Corre advanced_system_monitor.sh --daemon durante el dia para generarlo.</td></tr>"
+        return
+    fi
+    echo "$TOP_PROCS_RAW" | while IFS=',' read -r proc avg count; do
+        proc_esc=$(echo "$proc" | html_escape)
+        echo "<tr><td>${proc_esc}</td><td>${avg}%</td><td>${count}</td></tr>"
+    done
+}
+
+generate_html_report() {
+    local out="$REPORTS_DIR/report_${REPORT_DATE}.html"
+    local rows
+    rows=$(build_top_processes_html_rows)
+
+    cat > "$out" <<HTML
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de sistema - ${REPORT_DATE}</title>
+<style>
+    :root {
+        --bg: #f4f6f9;
+        --card: #ffffff;
+        --header: #1f3a5f;
+        --accent: #2f6fed;
+        --text: #24303f;
+        --muted: #6b7789;
+        --border: #e3e7ee;
+    }
+    * { box-sizing: border-box; }
+    body {
+        margin: 0;
+        padding: 32px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    .container { max-width: 900px; margin: 0 auto; }
+    header {
+        background: var(--header);
+        color: #fff;
+        padding: 24px 32px;
+        border-radius: 10px 10px 0 0;
+    }
+    header h1 { margin: 0 0 6px 0; font-size: 1.5rem; }
+    header p { margin: 2px 0; color: #cfd9ea; font-size: 0.9rem; }
+    .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-top: none;
+        padding: 0 32px 8px 32px;
+    }
+    .container > .card:last-of-type { border-radius: 0 0 10px 10px; padding-bottom: 32px; }
+    section { padding: 24px 0; border-bottom: 1px solid var(--border); }
+    section:last-child { border-bottom: none; }
+    section h2 {
+        font-size: 1.05rem;
+        color: var(--accent);
+        margin: 0 0 12px 0;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+    .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 16px;
+    }
+    .metric {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px 16px;
+    }
+    .metric .label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; }
+    .metric .value { font-size: 1.3rem; font-weight: 600; margin-top: 4px; }
+    pre.uptime {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 16px;
+        font-family: "Cascadia Code", Consolas, monospace;
+        font-size: 0.9rem;
+        overflow-x: auto;
+    }
+    table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 0.92rem; }
+    th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 0.75rem; }
+    tr:last-child td { border-bottom: none; }
+    td.empty { color: var(--muted); font-style: italic; }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 16px 0 0 0; }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>Reporte diario de recursos del sistema</h1>
+        <p>Fecha del reporte: ${REPORT_DATE}</p>
+        <p>Generado el: ${GENERATED_AT} &middot; Muestras analizadas: ${SAMPLE_COUNT}</p>
+    </header>
+    <div class="card">
+        <section>
+            <h2>Uptime y load average</h2>
+            <pre class="uptime">$(echo "$UPTIME_INFO" | html_escape)</pre>
+        </section>
+        <section>
+            <h2>Pico de memoria del dia</h2>
+            <div class="metric-grid">
+                <div class="metric">
+                    <div class="label">Uso maximo de memoria</div>
+                    <div class="value">${PEAK_MEM_PCT}</div>
+                </div>
+                <div class="metric">
+                    <div class="label">Momento en que ocurrio</div>
+                    <div class="value">${PEAK_MEM_TS}</div>
+                </div>
+            </div>
+        </section>
+        <section>
+            <h2>Top 5 procesos por uso promedio de CPU</h2>
+            <table>
+                <thead>
+                    <tr><th>Proceso</th><th>CPU promedio</th><th>Muestras</th></tr>
+                </thead>
+                <tbody>
+                    ${rows}
+                </tbody>
+            </table>
+        </section>
+        <section>
+            <h2>Trafico de red total del dia</h2>
+            <div class="metric-grid">
+                <div class="metric">
+                    <div class="label">Recibido (RX)</div>
+                    <div class="value">${NET_RX_MB} MB</div>
+                </div>
+                <div class="metric">
+                    <div class="label">Enviado (TX)</div>
+                    <div class="value">${NET_TX_MB} MB</div>
+                </div>
+            </div>
+        </section>
+        <footer>
+            Generado automaticamente por generate_report.sh<br>
+            Autores: Yeferson Alexis Salcedo Preciado &middot; Jhoan Esteban Echeverri Villa
+        </footer>
+    </div>
+</div>
+</body>
+</html>
+HTML
+    echo "$out"
+}
+
+
+# Punto de entrada: genera los 3 formatos y avisa donde quedaron.
 txt_path=$(generate_text_report)
 csv_path=$(generate_csv_report)
+html_path=$(generate_html_report)
 
 echo "Reporte generado para $REPORT_DATE ($SAMPLE_COUNT muestras):"
 echo "  Texto: $txt_path"
 echo "  CSV:   $csv_path"
+echo "  HTML:  $html_path"
